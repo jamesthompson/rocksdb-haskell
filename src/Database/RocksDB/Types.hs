@@ -13,10 +13,12 @@ module Database.RocksDB.Types
     , BloomFilter (..)
     , Comparator (..)
     , Compression (..)
+    , ColumnFamilyDescriptor (..)
     , FilterPolicy (..)
     , Options (..)
     , Property (..)
     , ReadOptions (..)
+    , RocksDBError (..)
     , Snapshot (..)
     , WriteBatch
     , WriteOptions (..)
@@ -24,14 +26,17 @@ module Database.RocksDB.Types
     , defaultOptions
     , defaultReadOptions
     , defaultWriteOptions
+    , columnFamilyDescriptor
     )
 where
 
 import           Data.ByteString    (ByteString)
 import           Data.Default
 import           Foreign
+import           Control.Exception
 
 import           Database.RocksDB.C
+
 
 -- | Snapshot handle
 newtype Snapshot = Snapshot SnapshotPtr deriving (Eq)
@@ -190,3 +195,21 @@ data BatchOp = Put ByteString ByteString | Del ByteString
 -- | Properties exposed by RocksDB
 data Property = NumFilesAtLevel Int | Stats | SSTables
     deriving (Eq, Show)
+
+data ColumnFamilyDescriptor = ColumnFamilyDescriptor
+    { columnFamilyName    :: !String
+      -- ^ The name of the column family
+    , columnFamilyOptions :: !Options} 
+
+-- | Create a 'ColumnFamilyDescriptor' with the given name and default options
+columnFamilyDescriptor :: String -> ColumnFamilyDescriptor
+columnFamilyDescriptor = flip ColumnFamilyDescriptor def
+
+instance Default ColumnFamilyDescriptor where
+  def = columnFamilyDescriptor "default"
+  
+data RocksDBError = NoSuchColumnFamily String 
+                  | StringError String
+                  deriving Show
+
+instance Exception RocksDBError

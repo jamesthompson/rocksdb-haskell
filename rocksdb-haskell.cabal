@@ -1,5 +1,5 @@
 name:                rocksdb-haskell
-version:             1.0.1
+version:             1.2.0
 synopsis:            Haskell bindings to RocksDB
 homepage:            http://github.com/serokell/rocksdb-haskell
 bug-reports:         http://github.com/serokell/rocksdb-haskell/issues
@@ -47,6 +47,7 @@ library
                   , filepath
                   , resourcet > 0.3.2
                   , transformers
+                  , unordered-containers
 
   ghc-options:      -Wall -funbox-strict-fields
 
