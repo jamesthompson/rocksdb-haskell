@@ -1,4 +1,4 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards, TypeApplications #-}
 -- |
 -- Module      : Database.RocksDB.Internal
 -- Copyright   : (c) 2012-2013 The leveldb-haskell Authors
@@ -12,6 +12,9 @@
 module Database.RocksDB.Internal
     ( -- * Types
       DB (..)
+    , ColumnFamilies' (..)
+    , ColumnFamily' (..)
+    , ColumnFamilyArgs (..)
     , Comparator'
     , FilterPolicy'
     , Options' (..)
@@ -22,10 +25,13 @@ module Database.RocksDB.Internal
     , freeFilterPolicy
     , freeOpts
     , freeCString
+    , freeColumnFamilyArgs
+    , getColumnFamilyHandles
     , mkCReadOpts
     , mkComparator
     , mkCompareFun
     , mkCreateFilterFun
+    , mkColumnFamilyArgs
     , mkFilterPolicy
     , mkKeyMayMatchFun
     , mkOpts
@@ -46,23 +52,26 @@ where
 
 import           Control.Applicative    ((<$>))
 import           Control.Exception      (bracket, onException, throwIO)
-import           Control.Monad          (when)
+import           Control.Monad          ((<=<), when)
+import           Data.Default
 import           Data.ByteString        (ByteString)
+import           Data.HashMap.Strict    (HashMap)
 import           Foreign
-import           Foreign.C.String       (CString, peekCString, withCString)
+import           Foreign.C.String       (newCString, CString, peekCString, withCString)
 import           Foreign.C.Types        (CInt, CSize)
 
 import           Database.RocksDB.C
 import           Database.RocksDB.Types
 
 import qualified Data.ByteString        as BS
+import qualified Data.HashMap.Strict    as HM
 
 
 -- | Database handle
-data DB = DB RocksDBPtr Options'
+data DB = DB RocksDBPtr Options' ColumnFamilies'
 
 instance Eq DB where
-    (DB pt1 _) == (DB pt2 _) = pt1 == pt2
+    (DB pt1 _ _) == (DB pt2 _ _) = pt1 == pt2
 
 -- | Internal representation of a 'Comparator'
 data Comparator' = Comparator' (FunPtr CompareFun)
@@ -84,6 +93,64 @@ data Options' = Options'
     , _comp     :: !(Maybe Comparator')
     }
 
+-- | Internal representation of a single 'ColumnFamily' in a database
+data ColumnFamily' = ColumnFamily'
+    { _cfPtr     :: !ColumnFamilyPtr
+    , _name      :: !String
+    , _cfOpts    :: !Options'
+    }
+
+-- | Internal representation of the column families in a database
+data ColumnFamilies' = ColumnFamilies'
+    { _cfHandles :: !(HashMap String ColumnFamily')
+    }
+
+data ColumnFamilyArgs = ColumnFamilyArgs
+    { _cfsNames :: CArray CString
+    , _cfsOpts  :: CArray OptionsPtr
+    , _cfPtrs   :: CArray ColumnFamilyPtr
+    , _cfLen    :: Int
+    }
+
+getColumnFamilyHandles :: ColumnFamilyArgs -> IO ColumnFamilies'
+getColumnFamilyHandles args = do
+  let len = _cfLen args
+  names <- mapM peekCString <=< peekArray len $ _cfsNames args
+  opts  <- map (\ptr -> Options' ptr Nothing Nothing) <$> peekArray len (_cfsOpts args)
+  ptrs  <- peekArray len $ _cfPtrs args
+  let cfs   = zipWith3 ColumnFamily' ptrs names opts
+      cfMap = HM.fromList $ zip names cfs
+  return $ ColumnFamilies' cfMap
+
+mkColumnFamilyArgs :: [ColumnFamilyDescriptor] -> IO ColumnFamilyArgs
+mkColumnFamilyArgs cfds = do
+  let cfds' =
+        if any ((== "default") . columnFamilyName) cfds
+        then cfds
+        else def : cfds
+  let len = length cfds'
+
+  let nameStrs = map columnFamilyName cfds'
+  nameCStrs <- mapM newCString nameStrs
+  namesArr  <- newArray nameCStrs
+
+  let opts  = map columnFamilyOptions cfds'
+  optPtrs  <- mapM mkOpts opts
+  optsArr  <- newArray $ map _optsPtr optPtrs
+
+  cfPtrArr <- callocArray len
+  cfPtrs   <- peekArray len cfPtrArr
+
+  return $ ColumnFamilyArgs namesArr optsArr cfPtrArr len
+
+freeColumnFamilyArgs :: ColumnFamilyArgs -> IO ()
+freeColumnFamilyArgs (ColumnFamilyArgs nameArr optArr cfArr len) = do
+  nameList <- peekArray @CString len nameArr
+  mapM_ free nameList
+  free nameArr
+  optList <- peekArray @OptionsPtr len optArr
+  mapM_ free optList
+  free optArr
 
 mkOpts :: Options -> IO Options'
 mkOpts Options{..} = do

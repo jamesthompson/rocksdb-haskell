@@ -13,3 +13,7 @@ resolver: lts-9.14
 
 nix:
     packages: [rocksdb,gmp]
+extra-lib-dirs:
+    - /home/griffin/code/urb/rocksdb/
+extra-include-dirs:
+    - /home/griffin/code/urb/rocksdb/include
