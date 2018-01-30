@@ -310,7 +310,7 @@ putCF db@(DB db_ptr _ _) cf opts key val = liftIO . runExceptT $ do
         $ c_rocksdb_put_cf db_ptr opts_ptr cf_ptr
           key_ptr (intToCSize klen)
           val_ptr (intToCSize vlen)
-  
+
 
 getBinaryVal :: (Binary v, MonadIO m) => DB -> ReadOptions -> ByteString -> m (Maybe v)
 getBinaryVal db ropts key  = fmap bsToBinary <$> get db ropts key
@@ -362,35 +362,39 @@ delete (DB db_ptr _ _) opts key = liftIO $ withCWriteOpts opts $ \opts_ptr ->
             $ c_rocksdb_delete db_ptr opts_ptr key_ptr (intToCSize klen)
 
 -- | Perform a batch mutation.
-write :: MonadIO m => DB -> WriteOptions -> WriteBatch -> m ()
-write (DB db_ptr _ _) opts batch = liftIO $ withCWriteOpts opts $ \opts_ptr ->
-    bracket c_rocksdb_writebatch_create c_rocksdb_writebatch_destroy $ \batch_ptr -> do
+write :: MonadIO m => DB -> WriteOptions -> WriteBatch -> m (Either RocksDBError ())
+write db@(DB db_ptr _ _) opts batch = liftIO $ withCWriteOpts opts $ \opts_ptr ->
+    bracket c_rocksdb_writebatch_create c_rocksdb_writebatch_destroy $ \batch_ptr -> runExceptT $ do
 
     mapM_ (batchAdd batch_ptr) batch
 
-    throwIfErr "write" $ c_rocksdb_write db_ptr opts_ptr batch_ptr
+    liftIO . throwIfErr "write" $ c_rocksdb_write db_ptr opts_ptr batch_ptr
 
     -- ensure @ByteString@s (and respective shared @CStringLen@s) aren't GC'ed
     -- until here
     mapM_ (liftIO . touch) batch
 
     where
-        batchAdd batch_ptr (Put key val) =
-            BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
-            BU.unsafeUseAsCStringLen val $ \(val_ptr, vlen) ->
-                c_rocksdb_writebatch_put batch_ptr
-                                         key_ptr (intToCSize klen)
-                                         val_ptr (intToCSize vlen)
+        batchAdd batch_ptr (Put cfName key val) = do
+          ColumnFamily' cf_ptr _ _ <- lookupCF db cfName
+          liftIO . BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
+              BU.unsafeUseAsCStringLen val $ \(val_ptr, vlen) ->
+                c_rocksdb_writebatch_put_cf
+                  batch_ptr
+                  cf_ptr
+                  key_ptr (intToCSize klen)
+                  val_ptr (intToCSize vlen)
 
-        batchAdd batch_ptr (Del key) =
-            BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
-                c_rocksdb_writebatch_delete batch_ptr key_ptr (intToCSize klen)
+        batchAdd batch_ptr (Del cfName key) = do
+          ColumnFamily' cf_ptr _ _ <- lookupCF db cfName
+          liftIO . BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
+            c_rocksdb_writebatch_delete_cf batch_ptr cf_ptr key_ptr (intToCSize klen)
 
-        touch (Put (PS p _ _) (PS p' _ _)) = do
+        touch (Put _ (PS p _ _) (PS p' _ _)) = do
             touchForeignPtr p
             touchForeignPtr p'
 
-        touch (Del (PS p _ _)) = touchForeignPtr p
+        touch (Del _ (PS p _ _)) = touchForeignPtr p
 
 createBloomFilter :: MonadIO m => Int -> m BloomFilter
 createBloomFilter i = do

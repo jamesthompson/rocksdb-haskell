@@ -225,8 +225,18 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_put"
                            -> Val -> CSize
                            -> IO ()
 
+foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_put_cf"
+  c_rocksdb_writebatch_put_cf :: WriteBatchPtr
+                              -> ColumnFamilyPtr
+                              -> Key -> CSize
+                              -> Val -> CSize
+                              -> IO ()
+
 foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_delete"
   c_rocksdb_writebatch_delete :: WriteBatchPtr -> Key -> CSize -> IO ()
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_delete_cf"
+  c_rocksdb_writebatch_delete_cf :: WriteBatchPtr -> ColumnFamilyPtr -> Key -> CSize -> IO ()
 
 foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_iterate"
   c_rocksdb_writebatch_iterate :: WriteBatchPtr
