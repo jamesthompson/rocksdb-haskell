@@ -189,7 +189,7 @@ instance Default ReadOptions where
 type WriteBatch = [BatchOp]
 
 -- | Batch operation
-data BatchOp = Put ByteString ByteString | Del ByteString
+data BatchOp = Put String ByteString ByteString | Del String ByteString
     deriving (Eq, Show)
 
 -- | Properties exposed by RocksDB
@@ -199,7 +199,7 @@ data Property = NumFilesAtLevel Int | Stats | SSTables
 data ColumnFamilyDescriptor = ColumnFamilyDescriptor
     { columnFamilyName    :: !String
       -- ^ The name of the column family
-    , columnFamilyOptions :: !Options} 
+    , columnFamilyOptions :: !Options}
 
 -- | Create a 'ColumnFamilyDescriptor' with the given name and default options
 columnFamilyDescriptor :: String -> ColumnFamilyDescriptor
@@ -207,8 +207,8 @@ columnFamilyDescriptor = flip ColumnFamilyDescriptor def
 
 instance Default ColumnFamilyDescriptor where
   def = columnFamilyDescriptor "default"
-  
-data RocksDBError = NoSuchColumnFamily String 
+
+data RocksDBError = NoSuchColumnFamily String
                   | StringError String
                   deriving Show
 
