@@ -37,6 +37,7 @@ module Database.RocksDB.Internal
     , mkOpts
 
     -- * combinators
+    , withDB
     , withCWriteOpts
     , withCReadOpts
 
@@ -59,6 +60,8 @@ import           Data.HashMap.Strict    (HashMap)
 import           Foreign
 import           Foreign.C.String       (newCString, CString, peekCString, withCString)
 import           Foreign.C.Types        (CInt, CSize)
+import           Control.Concurrent.MVar
+import           Control.Monad.IO.Class
 
 import           Database.RocksDB.C
 import           Database.RocksDB.Types
@@ -68,16 +71,22 @@ import qualified Data.HashMap.Strict    as HM
 
 
 -- | Database handle
-data DB = DB RocksDBPtr Options' ColumnFamilies'
+data DB =
+  DB { _dbPtr :: RocksDBPtr
+     , _dbOptions :: Options'
+     , _dbColumnFamilies :: ColumnFamilies'
+     , _dbOpen :: MVar Bool
+     }
 
 instance Eq DB where
-    (DB pt1 _ _) == (DB pt2 _ _) = pt1 == pt2
+    (DB pt1 _ _ _) == (DB pt2 _ _ _) = pt1 == pt2
 
 -- | Internal representation of a 'Comparator'
 data Comparator' = Comparator' (FunPtr CompareFun)
                                (FunPtr Destructor)
                                (FunPtr NameFun)
                                ComparatorPtr
+  deriving Show
 
 -- | Internal representation of a 'FilterPolicy'
 data FilterPolicy' = FilterPolicy' (FunPtr CreateFilterFun)
@@ -91,14 +100,14 @@ data Options' = Options'
     { _optsPtr  :: !OptionsPtr
     , _cachePtr :: !(Maybe CachePtr)
     , _comp     :: !(Maybe Comparator')
-    }
+    } deriving Show
 
 -- | Internal representation of a single 'ColumnFamily' in a database
 data ColumnFamily' = ColumnFamily'
     { _cfPtr     :: !ColumnFamilyPtr
     , _name      :: !String
     , _cfOpts    :: !Options'
-    }
+    } deriving Show
 
 -- | Internal representation of the column families in a database
 data ColumnFamilies' = ColumnFamilies'
@@ -196,6 +205,13 @@ freeOpts (Options' opts_ptr mcache_ptr mcmp_ptr ) = do
     c_rocksdb_options_destroy opts_ptr
     maybe (return ()) c_rocksdb_cache_destroy mcache_ptr
     maybe (return ()) freeComparator mcmp_ptr
+
+withDB :: (MonadIO m) => DB -> m a -> m a
+withDB db action = do
+  isOpen <- liftIO . readMVar $ _dbOpen db
+  if isOpen
+    then action
+    else liftIO . throwIO $ userError "Operation on closed DB"
 
 withCWriteOpts :: WriteOptions -> (WriteOptionsPtr -> IO a) -> IO a
 withCWriteOpts WriteOptions{..} = bracket mkCWriteOpts freeCWriteOpts
