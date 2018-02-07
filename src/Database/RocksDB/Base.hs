@@ -76,6 +76,7 @@ module Database.RocksDB.Base
 import           Control.Applicative          ((<$>))
 import           Control.Exception            (bracket, bracketOnError, finally)
 import           Control.Monad                (liftM, when)
+import           Control.Concurrent.MVar
 
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
 import           Control.Monad.Trans.Resource (MonadResource (..), ReleaseKey, allocate,
@@ -183,23 +184,27 @@ open path opts cfDescriptors = liftIO $ bracketOnError initialize finalize mkDB
                     cfPtrs
 
                 cfs <- getColumnFamilyHandles args
-                return $ DB dbHandle opts' cfs
+                isOpen <- newMVar True
+                return $ DB dbHandle opts' cfs isOpen
 
 -- | Close a database.
 --
 -- The handle will be invalid after calling this action and should no
 -- longer be used.
 close :: MonadIO m => DB -> m ()
-close (DB db_ptr opts_ptr cfs) = liftIO $ do
-    mapM_ (c_rocksdb_column_family_handle_destroy . _cfPtr) . HM.elems . _cfHandles $ cfs
-    c_rocksdb_close db_ptr `finally` freeOpts opts_ptr
+close (DB db_ptr opts_ptr cfs openMV) = liftIO $ do
+    isOpen <- takeMVar openMV
+    when isOpen $ do
+        mapM_ (c_rocksdb_column_family_handle_destroy . _cfPtr) . HM.elems . _cfHandles $ cfs
+        c_rocksdb_close db_ptr `finally` freeOpts opts_ptr
+    putMVar openMV False
 
 createColumnFamily :: MonadIO m => DB -> ColumnFamilyDescriptor -> m DB
-createColumnFamily (DB db_ptr dbOpts (ColumnFamilies' cfs)) (ColumnFamilyDescriptor name opts) =
-    liftIO $ bracketOnError initialize finalize $ \(opts'@(Options' opts_ptr _ _), name') -> do
+createColumnFamily db@(DB db_ptr dbOpts (ColumnFamilies' cfs) isOpen) (ColumnFamilyDescriptor name opts) =
+    withDB db . liftIO . bracketOnError initialize finalize $ \(opts'@(Options' opts_ptr _ _), name') -> do
         cfHandle <- throwIfErr "create_cf" $ c_rocksdb_create_column_family db_ptr opts_ptr name'
         let cf = ColumnFamily' cfHandle name opts'
-        return . DB db_ptr dbOpts . ColumnFamilies' $ HM.insert name cf cfs
+        return db { _dbColumnFamilies = ColumnFamilies' $ HM.insert name cf cfs }
   where
     initialize = do
       opts' <- mkOpts opts
@@ -218,7 +223,7 @@ withSnapshot db act = liftIO $
 --
 -- The returned 'Snapshot' should be released with 'releaseSnapshot'.
 createSnapshot :: MonadIO m => DB -> m Snapshot
-createSnapshot (DB db_ptr _ _) = liftIO $
+createSnapshot db@(DB db_ptr _ _ _) = withDB db . liftIO $
     Snapshot <$> c_rocksdb_create_snapshot db_ptr
 
 -- | Release a snapshot.
@@ -226,12 +231,12 @@ createSnapshot (DB db_ptr _ _) = liftIO $
 -- The handle will be invalid after calling this action and should no
 -- longer be used.
 releaseSnapshot :: MonadIO m => DB -> Snapshot -> m ()
-releaseSnapshot (DB db_ptr _ _) (Snapshot snap) = liftIO $
+releaseSnapshot db@(DB db_ptr _ _ _) (Snapshot snap) = withDB db . liftIO $
     c_rocksdb_release_snapshot db_ptr snap
 
 -- | Get a DB property.
 getProperty :: MonadIO m => DB -> Property -> m (Maybe ByteString)
-getProperty (DB db_ptr _ _) p = liftIO $
+getProperty db@(DB db_ptr _ _ _) p = withDB db . liftIO $
     withCString (prop p) $ \prop_ptr -> do
         val_ptr <- c_rocksdb_property_value db_ptr prop_ptr
         if val_ptr == nullPtr
@@ -266,7 +271,7 @@ type Range  = (ByteString, ByteString)
 
 -- | Inspect the approximate sizes of the different levels.
 approximateSize :: MonadIO m => DB -> Range -> m Int64
-approximateSize (DB db_ptr _ _) (from, to) = liftIO $
+approximateSize db@(DB db_ptr _ _ _) (from, to) = withDB db . liftIO $
     BU.unsafeUseAsCStringLen from $ \(from_ptr, flen) ->
     BU.unsafeUseAsCStringLen to   $ \(to_ptr, tlen)   ->
     withArray [from_ptr]          $ \from_ptrs        ->
@@ -291,7 +296,7 @@ putBinary db wopts key val = put db wopts (binaryToBS key) (binaryToBS val)
 
 -- | Write a key/value pair to the default column family.
 put :: MonadIO m => DB -> WriteOptions -> ByteString -> ByteString -> m ()
-put (DB db_ptr _ _) opts key value = liftIO $ withCWriteOpts opts $ \opts_ptr ->
+put db@(DB db_ptr _ _ _) opts key value = withDB db . liftIO . withCWriteOpts opts $ \opts_ptr ->
     BU.unsafeUseAsCStringLen key   $ \(key_ptr, klen) ->
     BU.unsafeUseAsCStringLen value $ \(val_ptr, vlen) ->
         throwIfErr "put"
@@ -301,7 +306,7 @@ put (DB db_ptr _ _) opts key value = liftIO $ withCWriteOpts opts $ \opts_ptr ->
 
 -- | Write a key/value pair to a non-default column family.
 putCF :: MonadIO m => DB -> String -> WriteOptions -> ByteString -> ByteString -> m (Either RocksDBError ())
-putCF db@(DB db_ptr _ _) cf opts key val = liftIO . runExceptT $ do
+putCF db@(DB db_ptr _ _ _) cf opts key val = withDB db . liftIO . runExceptT $ do
     ColumnFamily' cf_ptr _ _ <- lookupCF db cf
     lift . BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
         BU.unsafeUseAsCStringLen val $ \(val_ptr, vlen) ->
@@ -320,7 +325,7 @@ getBinary db ropts key = fmap bsToBinary <$> get db ropts (binaryToBS key)
 
 -- | Read a value by key.
 get :: MonadIO m => DB -> ReadOptions -> ByteString -> m (Maybe ByteString)
-get (DB db_ptr _ _) opts key = liftIO $ withCReadOpts opts $ \opts_ptr ->
+get db@(DB db_ptr _ _ _) opts key = withDB db . liftIO $ withCReadOpts opts $ \opts_ptr ->
     BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
     alloca                       $ \vlen_ptr -> do
         val_ptr <- throwIfErr "get" $
@@ -339,7 +344,7 @@ getCF :: MonadIO m
       -> ReadOptions
       -> ByteString
       -> m (Either RocksDBError (Maybe ByteString))
-getCF db@(DB db_ptr _ _) cf opts key = liftIO . runExceptT $ do
+getCF db@(DB db_ptr _ _ _) cf opts key = withDB db . liftIO . runExceptT $ do
     ColumnFamily' cf_ptr _ _ <- lookupCF db cf
     lift . BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
       withCReadOpts opts $ \opts_ptr ->
@@ -356,14 +361,14 @@ getCF db@(DB db_ptr _ _) cf opts key = liftIO . runExceptT $ do
 
 -- | Delete a key/value pair.
 delete :: MonadIO m => DB -> WriteOptions -> ByteString -> m ()
-delete (DB db_ptr _ _) opts key = liftIO $ withCWriteOpts opts $ \opts_ptr ->
+delete db@(DB db_ptr _ _ _) opts key = withDB db . liftIO . withCWriteOpts opts $ \opts_ptr ->
     BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
         throwIfErr "delete"
             $ c_rocksdb_delete db_ptr opts_ptr key_ptr (intToCSize klen)
 
 -- | Perform a batch mutation.
 write :: MonadIO m => DB -> WriteOptions -> WriteBatch -> m (Either RocksDBError ())
-write db@(DB db_ptr _ _) opts batch = liftIO $ withCWriteOpts opts $ \opts_ptr ->
+write db@(DB db_ptr _ _ _) opts batch = withDB db . liftIO $ withCWriteOpts opts $ \opts_ptr ->
     bracket c_rocksdb_writebatch_create c_rocksdb_writebatch_destroy $ \batch_ptr -> runExceptT $ do
 
     mapM_ (batchAdd batch_ptr) batch
@@ -420,8 +425,9 @@ bsToBinary x = Binary.decode (BSL.fromStrict x)
 withFilePath :: FilePath -> (CString -> IO a) -> IO a
 withFilePath = GHC.withCString GHC.utf8
 
-lookupCF :: Monad m => DB -> String -> ExceptT RocksDBError m ColumnFamily'
-lookupCF (DB _ _ cfs) cf = maybe (throwE $ NoSuchColumnFamily cf) return
-                           . HM.lookup cf
-                           . _cfHandles
-                           $ cfs
+lookupCF :: MonadIO m => DB -> String -> ExceptT RocksDBError m ColumnFamily'
+lookupCF db@(DB _ _ cfs _) cf = withDB db
+                              . maybe (throwE $ NoSuchColumnFamily cf) return
+                              . HM.lookup cf
+                              . _cfHandles
+                              $ cfs

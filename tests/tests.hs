@@ -8,6 +8,7 @@ import           Control.Monad.Trans.Resource (MonadResource, runResourceT)
 import           Data.Default                 (def)
 import           System.IO.Temp               (withSystemTempDirectory)
 import           Control.Exception
+import           Control.Concurrent
 
 import           Database.RocksDB             ( createColumnFamily
                                               , getCF
@@ -18,6 +19,7 @@ import           Database.RocksDB             ( createColumnFamily
                                               , createIfMissing
                                               , get
                                               , open
+                                              , close
                                               , put
                                               , columnFamilyDescriptor
                                               )
@@ -73,3 +75,14 @@ main = hspec $ do
         put db def "zzz" "zzz"
         get db def "zzz"
       `shouldReturn` (Just "zzz")
+
+  describe "running in a spark" $ do
+    it "allows open/close from a spark" $ do
+      done <- newEmptyMVar
+      _ <- forkOn 2 . runResourceT . withSystemTempDirectory "rocksdb4" $ \path -> do
+        db <- initializeDB path
+        put db def "zzz" "zzz"
+        get db def "zzz"
+        close db
+        liftIO $ putMVar done ()
+      takeMVar done
