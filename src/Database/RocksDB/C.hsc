@@ -113,6 +113,14 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_delete"
                    -> ErrPtr
                    -> IO ()
 
+foreign import ccall safe "rocksdb\\c.h rocksdb_delete_cf"
+  c_rocksdb_delete_cf :: RocksDBPtr
+                      -> WriteOptionsPtr
+                      -> ColumnFamilyPtr
+                      -> Key -> CSize
+                      -> ErrPtr
+                      -> IO ()
+
 foreign import ccall safe "rocksdb\\c.h rocksdb_write"
   c_rocksdb_write :: RocksDBPtr
                   -> WriteOptionsPtr
