@@ -43,6 +43,7 @@ module Database.RocksDB.Base
     , putBinary
     , putCF
     , delete
+    , deleteCF
     , write
     , get
     , getBinary
@@ -365,6 +366,17 @@ delete db@(DB db_ptr _ _ _) opts key = withDB db . liftIO . withCWriteOpts opts 
     BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
         throwIfErr "delete"
             $ c_rocksdb_delete db_ptr opts_ptr key_ptr (intToCSize klen)
+
+-- | Delete a key/value pair from the specified column family.
+deleteCF :: MonadIO m => DB -> String -> WriteOptions -> ByteString -> m (Either RocksDBError ())
+deleteCF db@(DB db_ptr _ _ _) cf opts key = withDB db . liftIO . runExceptT $ do
+  ColumnFamily' cf_ptr _ _ <- lookupCF db cf
+  lift . BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
+    withCWriteOpts opts $ \opts_ptr ->
+    throwIfErr "delete"
+      $ c_rocksdb_delete_cf db_ptr opts_ptr cf_ptr key_ptr (intToCSize klen)
+
+
 
 -- | Perform a batch mutation.
 write :: MonadIO m => DB -> WriteOptions -> WriteBatch -> m (Either RocksDBError ())
