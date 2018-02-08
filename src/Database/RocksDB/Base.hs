@@ -1,5 +1,4 @@
 {-# LANGUAGE CPP           #-}
-{-# LANGUAGE TupleSections #-}
 
 -- |
 -- Module      : Database.RocksDB.Base
@@ -76,7 +75,7 @@ module Database.RocksDB.Base
 
 import           Control.Applicative          ((<$>))
 import           Control.Exception            (bracket, bracketOnError, finally)
-import           Control.Monad                (liftM, when)
+import           Control.Monad                (when)
 import           Control.Concurrent.MVar
 
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
@@ -201,7 +200,7 @@ close (DB db_ptr opts_ptr cfs openMV) = liftIO $ do
     putMVar openMV False
 
 createColumnFamily :: MonadIO m => DB -> ColumnFamilyDescriptor -> m DB
-createColumnFamily db@(DB db_ptr dbOpts (ColumnFamilies' cfs) isOpen) (ColumnFamilyDescriptor name opts) =
+createColumnFamily db@(DB db_ptr _ (ColumnFamilies' cfs) _) (ColumnFamilyDescriptor name opts) =
     withDB db . liftIO . bracketOnError initialize finalize $ \(opts'@(Options' opts_ptr _ _), name') -> do
         cfHandle <- throwIfErr "create_cf" $ c_rocksdb_create_column_family db_ptr opts_ptr name'
         let cf = ColumnFamily' cfHandle name opts'
@@ -284,7 +283,7 @@ approximateSize db@(DB db_ptr _ _ _) (from, to) = withDB db . liftIO $
                                     from_ptrs flen_ptrs
                                     to_ptrs tlen_ptrs
                                     size_ptrs
-        liftM head $ peekArray 1 size_ptrs >>= mapM toInt64
+        fmap head $ peekArray 1 size_ptrs >>= mapM toInt64
 
     where
         toInt64 = return . fromIntegral
@@ -311,7 +310,7 @@ putCF db@(DB db_ptr _ _ _) cf opts key val = withDB db . liftIO . runExceptT $ d
     ColumnFamily' cf_ptr _ _ <- lookupCF db cf
     lift . BU.unsafeUseAsCStringLen key $ \(key_ptr, klen) ->
         BU.unsafeUseAsCStringLen val $ \(val_ptr, vlen) ->
-            withCWriteOpts opts $ \opts_ptr -> do
+            withCWriteOpts opts $ \opts_ptr ->
       throwIfErr "put"
         $ c_rocksdb_put_cf db_ptr opts_ptr cf_ptr
           key_ptr (intToCSize klen)
@@ -339,6 +338,7 @@ get db@(DB db_ptr _ _ _) opts key = withDB db . liftIO $ withCReadOpts opts $ \o
                 freeCString val_ptr
                 return res'
 
+-- | Read a value by key from a specified column family.
 getCF :: MonadIO m
       => DB
       -> String
