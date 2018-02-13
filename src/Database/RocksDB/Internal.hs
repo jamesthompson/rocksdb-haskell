@@ -48,12 +48,16 @@ module Database.RocksDB.Internal
     , intToCInt
     , cIntToInt
     , boolToNum
+
+    , lookupCF
     )
 where
 
 import           Control.Applicative    ((<$>))
 import           Control.Exception      (bracket, onException, throwIO)
 import           Control.Monad          ((<=<), when)
+import           Control.Monad.Trans.Except (ExceptT, throwE)
+
 import           Data.Default
 import           Data.ByteString        (ByteString)
 import           Data.HashMap.Strict    (HashMap)
@@ -347,3 +351,11 @@ boolToNum :: Num b => Bool -> b
 boolToNum True  = fromIntegral (1 :: Int)
 boolToNum False = fromIntegral (0 :: Int)
 {-# INLINE boolToNum #-}
+
+
+lookupCF :: MonadIO m => DB -> String -> ExceptT RocksDBError m ColumnFamily'
+lookupCF db@(DB _ _ cfs _) cf = withDB db
+                              . maybe (throwE $ NoSuchColumnFamily cf) return
+                              . HM.lookup cf
+                              . _cfHandles
+                              $ cfs
