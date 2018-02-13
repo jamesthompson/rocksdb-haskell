@@ -183,6 +183,9 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_repair_db"
 foreign import ccall safe "rocksdb\\c.h rocksdb_create_iterator"
   c_rocksdb_create_iterator :: RocksDBPtr -> ReadOptionsPtr -> IO IteratorPtr
 
+foreign import ccall safe "rocksdb\\c.h rocksdb_create_iterator_cf"
+  c_rocksdb_create_iterator_cf :: RocksDBPtr -> ReadOptionsPtr -> ColumnFamilyPtr -> IO IteratorPtr
+
 foreign import ccall safe "rocksdb\\c.h rocksdb_iter_destroy"
   c_rocksdb_iter_destroy :: IteratorPtr -> IO ()
 

@@ -81,7 +81,7 @@ import           Control.Concurrent.MVar
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
 import           Control.Monad.Trans.Resource (MonadResource (..), ReleaseKey, allocate,
                                                release)
-import           Control.Monad.Trans.Except   (ExceptT, throwE, runExceptT)
+import           Control.Monad.Trans.Except   (runExceptT)
 import           Control.Monad.Trans.Class    (lift)
 import           Data.Binary                  (Binary)
 import qualified Data.Binary                  as Binary
@@ -436,10 +436,3 @@ bsToBinary x = Binary.decode (BSL.fromStrict x)
 -- https://msdn.microsoft.com/en-us/library/windows/desktop/dd374081(v=vs.85).aspx.
 withFilePath :: FilePath -> (CString -> IO a) -> IO a
 withFilePath = GHC.withCString GHC.utf8
-
-lookupCF :: MonadIO m => DB -> String -> ExceptT RocksDBError m ColumnFamily'
-lookupCF db@(DB _ _ cfs _) cf = withDB db
-                              . maybe (throwE $ NoSuchColumnFamily cf) return
-                              . HM.lookup cf
-                              . _cfHandles
-                              $ cfs

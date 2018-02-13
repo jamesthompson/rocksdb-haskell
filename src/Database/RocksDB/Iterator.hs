@@ -29,17 +29,20 @@ module Database.RocksDB.Iterator
     , mapIter
     , releaseIter
     , withIter
+    , withIterCF
     , withIterator
     , iterOpenBracket
     , iterOpen
     ) where
 
 import           Control.Applicative          ((<$>), (<*>))
-import           Control.Exception            (bracket, finally, onException)
+import           Control.Exception            (bracket, finally, onException, throw)
 import           Control.Monad                (when)
 import           Control.Monad.IO.Class       (MonadIO (liftIO))
 import           Control.Monad.Trans.Resource (MonadResource (..), ReleaseKey, allocate,
                                                release)
+import           Control.Monad.Trans.Except   (runExceptT)
+
 import           Data.ByteString              (ByteString)
 import           Data.Maybe                   (catMaybes)
 import           Foreign
@@ -58,7 +61,7 @@ import qualified Data.ByteString.Unsafe       as BU
 -- | Iterator handle
 --
 -- Note that an 'Iterator' requires external synchronization if it is shared
--- between multiple threads which mutate it's state. See
+-- between multiple threads which mutate its state. See
 -- @examples/iterforkio.hs@ for a simple example of how to do that.
 data Iterator = Iterator !IteratorPtr !ReadOptionsPtr deriving (Eq)
 
@@ -103,6 +106,15 @@ createIter db@(DB db_ptr _ _ _) opts = withDB db . liftIO $ do
                         c_rocksdb_create_iterator db_ptr opts_ptr
         return $ Iterator iter_ptr opts_ptr
 
+createIterCF :: MonadIO m => DB -> String -> ReadOptions -> m (Either RocksDBError Iterator)
+createIterCF db@(DB db_ptr _ _ _) cf opts = withDB db . liftIO . runExceptT $ do
+    ColumnFamily' cf_ptr _ _ <- lookupCF db cf
+    opts_ptr <- liftIO $ mkCReadOpts opts
+    liftIO . flip onException (freeCReadOpts opts_ptr) $ do
+        iter_ptr <- throwErrnoIfNull "create_iterator" $
+                        c_rocksdb_create_iterator_cf db_ptr opts_ptr cf_ptr
+        return $ Iterator iter_ptr opts_ptr
+
 -- | Release an 'Iterator'.
 --
 -- The handle will be invalid after calling this action and should no
@@ -112,9 +124,24 @@ releaseIter :: MonadIO m => Iterator -> m ()
 releaseIter (Iterator iter_ptr opts) = liftIO $
     c_rocksdb_iter_destroy iter_ptr `finally` freeCReadOpts opts
 
+
 -- | Run an action with an 'Iterator'
 withIter :: MonadIO m => DB -> ReadOptions -> (Iterator -> IO a) -> m a
 withIter db opts = liftIO . bracket (createIter db opts) releaseIter
+
+withIterCF :: MonadIO m => DB
+           -> String
+           -> ReadOptions
+           -> (Iterator -> IO a)
+           -> m (Either RocksDBError a)
+withIterCF db cf opts cb = liftIO $ bracket (createIterCF db cf opts) doRelease doCb
+  where
+    doRelease (Right iter) = Right <$> releaseIter iter
+    doRelease (Left err) = pure $ Left err
+
+    doCb eitherIter = do
+        iter <- either throw pure eitherIter
+        pure <$> cb iter
 
 -- | An iterator is either positioned at a key/value pair, or not valid. This
 -- function returns /true/ iff the iterator is valid.
