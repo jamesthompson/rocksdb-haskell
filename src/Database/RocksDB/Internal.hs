@@ -1,3 +1,4 @@
+{-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE RecordWildCards, TypeApplications #-}
 -- |
 -- Module      : Database.RocksDB.Internal
@@ -99,11 +100,27 @@ data FilterPolicy' = FilterPolicy' (FunPtr CreateFilterFun)
                                    (FunPtr NameFun)
                                    FilterPolicyPtr
 
+-- | Internal representation of a 'SliceTransform'
+data SliceTransform'
+  = SliceTransformFun' (FunPtr SliceTransformFun)
+                       (FunPtr KeyPredicateFun)
+                       (FunPtr KeyPredicateFun)
+                       (FunPtr Destructor)
+                       (FunPtr NameFun)
+                       SliceTransformPtr
+  | SliceTransformConst' SliceTransformPtr
+  deriving Show
+
+sliceTransformPtr :: SliceTransform' -> SliceTransformPtr
+sliceTransformPtr (SliceTransformFun' _ _ _ _ _ ptr) = ptr
+sliceTransformPtr (SliceTransformConst' ptr)         = ptr
+
 -- | Internal representation of the 'Options'
 data Options' = Options'
-    { _optsPtr  :: !OptionsPtr
-    , _cachePtr :: !(Maybe CachePtr)
-    , _comp     :: !(Maybe Comparator')
+    { _optsPtr    :: !OptionsPtr
+    , _cachePtr   :: !(Maybe CachePtr)
+    , _comp       :: !(Maybe Comparator')
+    , _sliceTrans :: !(Maybe SliceTransform')
     } deriving Show
 
 -- | Internal representation of a single 'ColumnFamily' in a database
@@ -129,7 +146,7 @@ getColumnFamilyHandles :: ColumnFamilyArgs -> IO ColumnFamilies'
 getColumnFamilyHandles args = do
   let len = _cfLen args
   names <- mapM peekCString <=< peekArray len $ _cfsNames args
-  opts  <- map (\ptr -> Options' ptr Nothing Nothing) <$> peekArray len (_cfsOpts args)
+  opts  <- map (\ptr -> Options' ptr Nothing Nothing Nothing) <$> peekArray len (_cfsOpts args)
   ptrs  <- peekArray len $ _cfPtrs args
   let cfs   = zipWith3 ColumnFamily' ptrs names opts
       cfMap = HM.fromList $ zip names cfs
@@ -152,18 +169,17 @@ mkColumnFamilyArgs cfds = do
   optsArr  <- newArray $ map _optsPtr optPtrs
 
   cfPtrArr <- callocArray len
-  cfPtrs   <- peekArray len cfPtrArr
-
   return $ ColumnFamilyArgs namesArr optsArr cfPtrArr len
 
 freeColumnFamilyArgs :: ColumnFamilyArgs -> IO ()
 freeColumnFamilyArgs (ColumnFamilyArgs nameArr optArr cfArr len) = do
-  nameList <- peekArray @CString len nameArr
-  mapM_ free nameList
-  free nameArr
-  optList <- peekArray @OptionsPtr len optArr
-  mapM_ free optList
-  free optArr
+  -- nameList <- peekArray @CString len nameArr
+  -- mapM_ free nameList
+  -- free nameArr
+  -- optList <- peekArray @OptionsPtr len optArr
+  -- mapM_ free optList
+  -- free optArr
+  pure ()
 
 mkOpts :: Options -> IO Options'
 mkOpts Options{..} = do
@@ -183,8 +199,9 @@ mkOpts Options{..} = do
         $ intToCSize writeBufferSize
 
     cmp   <- maybeSetCmp opts_ptr comparator
+    pfxEx <- maybeSetPfxEx opts_ptr prefixExtractor
 
-    return (Options' opts_ptr Nothing cmp)
+    return (Options' opts_ptr Nothing cmp pfxEx)
 
   where
     ccompression NoCompression =
@@ -204,11 +221,22 @@ mkOpts Options{..} = do
         c_rocksdb_options_set_comparator opts_ptr cmp_ptr
         return cmp'
 
+    maybeSetPfxEx :: OptionsPtr -> Maybe SliceTransform -> IO (Maybe SliceTransform')
+    maybeSetPfxEx opts_ptr (Just strans) = Just <$> setpfxex opts_ptr strans
+    maybeSetPfxEx _ Nothing              = return Nothing
+
+    setpfxex :: OptionsPtr -> SliceTransform -> IO SliceTransform'
+    setpfxex opts_ptr strans = do
+      strans'@(sliceTransformPtr -> strans_ptr) <- mkSliceTransform strans
+      c_rocksdb_options_set_prefix_extractor opts_ptr strans_ptr
+      pure strans'
+
 freeOpts :: Options' -> IO ()
-freeOpts (Options' opts_ptr mcache_ptr mcmp_ptr ) = do
+freeOpts (Options' opts_ptr mcache_ptr mcmp_ptr strans_ptr) = do
     c_rocksdb_options_destroy opts_ptr
     maybe (return ()) c_rocksdb_cache_destroy mcache_ptr
     maybe (return ()) freeComparator mcmp_ptr
+    maybe (return ()) freeSliceTransform strans_ptr
 
 withDB :: (MonadIO m) => DB -> m a -> m a
 withDB db action = do
@@ -299,12 +327,54 @@ freeFilterPolicy (FilterPolicy' ccffun ckmfun cdest cname cfp) = do
     freeHaskellFunPtr cdest
     freeHaskellFunPtr cname
 
+mkSliceTransformFun :: (ByteString -> ByteString) -> SliceTransformFun
+mkSliceTransformFun f _ k klen rlen = do
+  key <- BS.packCStringLen (k, fromIntegral klen)
+  print key
+  let res = f key
+  poke rlen . fromIntegral . BS.length $ res
+  BS.useAsCString res pure
+
+mkKeyPredFun :: (ByteString -> Bool) -> KeyPredicateFun
+mkKeyPredFun f _ k klen = do
+  print k
+  pure . fromBool . f =<< BS.packCStringLen (k, fromIntegral klen)
+
+mkSliceTransform :: SliceTransform -> IO SliceTransform'
+mkSliceTransform SliceTransformFun{..} =
+  withCString stName $ \cs -> do
+    cname <- mkName $ const cs
+    cdest <- mkDest $ const ()
+    stfun <- mkST . mkSliceTransformFun $ stTransform
+    irfun <- mkKeyPred . mkKeyPredFun $ stInRange
+    idfun <- mkKeyPred . mkKeyPredFun $ stInDomain
+    strans <- c_rocksdb_slicetransform_create nullPtr cdest stfun irfun idfun cname
+    pure $ SliceTransformFun' stfun irfun idfun cdest cname strans
+
+mkSliceTransform (FixedPrefixSliceTransform prefixSize) =
+  SliceTransformConst' <$> c_rocksdb_slicetransform_create_fixed_prefix (fromIntegral prefixSize)
+
+mkSliceTransform NoOpSliceTransform =
+  SliceTransformConst' <$> c_rocksdb_slicetransform_create_noop
+
+freeSliceTransform :: SliceTransform' -> IO ()
+freeSliceTransform (SliceTransformFun' stfun irfun idfun cdest cname st) = do
+  c_rocksdb_slicetransform_destroy st
+  freeHaskellFunPtr stfun
+  freeHaskellFunPtr irfun
+  freeHaskellFunPtr idfun
+  freeHaskellFunPtr cdest
+  freeHaskellFunPtr cname
+freeSliceTransform (SliceTransformConst' st) =
+  c_rocksdb_slicetransform_destroy st
+
 mkCReadOpts :: ReadOptions -> IO ReadOptionsPtr
 mkCReadOpts ReadOptions{..} = do
     opts_ptr <- c_rocksdb_readoptions_create
     flip onException (c_rocksdb_readoptions_destroy opts_ptr) $ do
         c_rocksdb_readoptions_set_verify_checksums opts_ptr $ boolToNum verifyCheckSums
         c_rocksdb_readoptions_set_fill_cache opts_ptr $ boolToNum fillCache
+        c_rocksdb_readoptions_set_prefix_same_as_start opts_ptr $ fromBool prefixSameAsStart
 
         case useSnapshot of
             Just (Snapshot snap_ptr) -> c_rocksdb_readoptions_set_snapshot opts_ptr snap_ptr

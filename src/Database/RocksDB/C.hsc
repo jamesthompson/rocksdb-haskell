@@ -32,19 +32,21 @@ data LSnapshot
 data LWriteBatch
 data LWriteOptions
 data LFilterPolicy
+data LSliceTransform
 
-type RocksDBPtr      = Ptr RocksDB
-type ColumnFamilyPtr = Ptr ColumnFamily
-type CachePtr        = Ptr LCache
-type ComparatorPtr   = Ptr LComparator
-type IteratorPtr     = Ptr LIterator
-type LoggerPtr       = Ptr LLogger
-type OptionsPtr      = Ptr LOptions
-type ReadOptionsPtr  = Ptr LReadOptions
-type SnapshotPtr     = Ptr LSnapshot
-type WriteBatchPtr   = Ptr LWriteBatch
-type WriteOptionsPtr = Ptr LWriteOptions
-type FilterPolicyPtr = Ptr LFilterPolicy
+type RocksDBPtr        = Ptr RocksDB
+type ColumnFamilyPtr   = Ptr ColumnFamily
+type CachePtr          = Ptr LCache
+type ComparatorPtr     = Ptr LComparator
+type IteratorPtr       = Ptr LIterator
+type LoggerPtr         = Ptr LLogger
+type OptionsPtr        = Ptr LOptions
+type ReadOptionsPtr    = Ptr LReadOptions
+type SnapshotPtr       = Ptr LSnapshot
+type WriteBatchPtr     = Ptr LWriteBatch
+type WriteOptionsPtr   = Ptr LWriteOptions
+type FilterPolicyPtr   = Ptr LFilterPolicy
+type SliceTransformPtr = Ptr LSliceTransform
 
 type DBName = CString
 type ErrPtr = Ptr CString
@@ -270,6 +272,9 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_options_destroy"
 foreign import ccall safe "rocksdb\\c.h rocksdb_options_set_comparator"
   c_rocksdb_options_set_comparator :: OptionsPtr -> ComparatorPtr -> IO ()
 
+foreign import ccall safe "rocksdb\\c.h rocksdb_options_set_prefix_extractor"
+  c_rocksdb_options_set_prefix_extractor :: OptionsPtr -> SliceTransformPtr -> IO ()
+
 foreign import ccall safe "rocksdb\\c.h rocksdb_options_set_create_if_missing"
   c_rocksdb_options_set_create_if_missing :: OptionsPtr -> CUChar -> IO ()
 
@@ -359,6 +364,45 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_filterpolicy_create_bloom"
   c_rocksdb_filterpolicy_create_bloom :: CInt -> IO FilterPolicyPtr
 
 --
+-- Slice Transform
+--
+
+type SliceTransformFun = StatePtr
+                       -> CString    -- ^ key
+                       -> CSize      -- ^ key length
+                       -> Ptr CSize  -- ^ result length
+                       -> IO CString
+
+type KeyPredicateFun = StatePtr
+                     -> CString
+                     -> CSize
+                     -> IO CUChar
+
+foreign import ccall "wrapper"
+  mkST :: SliceTransformFun -> IO (FunPtr SliceTransformFun)
+
+foreign import ccall "wrapper"
+  mkKeyPred :: KeyPredicateFun -> IO (FunPtr KeyPredicateFun)
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_slicetransform_create"
+  c_rocksdb_slicetransform_create :: StatePtr
+                                  -> FunPtr Destructor
+                                  -> FunPtr SliceTransformFun
+                                  -> FunPtr KeyPredicateFun -- ^ in_domain
+                                  -> FunPtr KeyPredicateFun -- ^ in_range
+                                  -> FunPtr NameFun
+                                  -> IO SliceTransformPtr
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_slicetransform_create_fixed_prefix"
+  c_rocksdb_slicetransform_create_fixed_prefix :: CSize -> IO SliceTransformPtr
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_slicetransform_create_noop"
+  c_rocksdb_slicetransform_create_noop :: IO SliceTransformPtr
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_slicetransform_destroy"
+  c_rocksdb_slicetransform_destroy :: SliceTransformPtr -> IO ()
+
+--
 -- Read options
 --
 
@@ -377,6 +421,8 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_readoptions_set_fill_cache"
 foreign import ccall safe "rocksdb\\c.h rocksdb_readoptions_set_snapshot"
   c_rocksdb_readoptions_set_snapshot :: ReadOptionsPtr -> SnapshotPtr -> IO ()
 
+foreign import ccall safe "rocksdb\\c.h rocksdb_readoptions_set_prefix_same_as_start"
+  c_rocksdb_readoptions_set_prefix_same_as_start :: ReadOptionsPtr -> CUChar -> IO ()
 
 --
 -- Write options

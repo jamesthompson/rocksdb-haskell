@@ -60,6 +60,9 @@ module Database.RocksDB.Base
     , releaseBloomFilter
     , bloomFilter
 
+    -- * Prefix extraction / slice transform
+    , SliceTransform(..)
+
     -- * Administrative Functions
     , Property (..), getProperty
     , destroy
@@ -170,7 +173,7 @@ open path opts cfDescriptors = liftIO $ bracketOnError initialize finalize mkDB
             freeColumnFamilyArgs cfArgs'
             GHC.setFileSystemEncoding oldenc
 # endif
-        mkDB (opts'@(Options' opts_ptr _ _), args@(ColumnFamilyArgs cfNames cfOpts cfPtrs cfLen), _) = do
+        mkDB (opts'@(Options' opts_ptr _ _ _), args@(ColumnFamilyArgs cfNames cfOpts cfPtrs cfLen), _) = do
             when (createIfMissing opts) $
                 createDirectoryIfMissing True path
             withFilePath path $ \path_ptr -> do
@@ -201,7 +204,7 @@ close (DB db_ptr opts_ptr cfs openMV) = liftIO $ do
 
 createColumnFamily :: MonadIO m => DB -> ColumnFamilyDescriptor -> m DB
 createColumnFamily db@(DB db_ptr _ (ColumnFamilies' cfs) _) (ColumnFamilyDescriptor name opts) =
-    withDB db . liftIO . bracketOnError initialize finalize $ \(opts'@(Options' opts_ptr _ _), name') -> do
+    withDB db . liftIO . bracketOnError initialize finalize $ \(opts'@(Options' opts_ptr _ _ _), name') -> do
         cfHandle <- throwIfErr "create_cf" $ c_rocksdb_create_column_family db_ptr opts_ptr name'
         let cf = ColumnFamily' cfHandle name opts'
         return db { _dbColumnFamilies = ColumnFamilies' $ HM.insert name cf cfs }
@@ -253,7 +256,7 @@ getProperty db@(DB db_ptr _ _ _) p = withDB db . liftIO $
 destroy :: MonadIO m => FilePath -> Options -> m ()
 destroy path opts = liftIO $ bracket (mkOpts opts) freeOpts destroy'
     where
-        destroy' (Options' opts_ptr _ _) =
+        destroy' (Options' opts_ptr _ _ _) =
             withFilePath path $ \path_ptr ->
                 throwIfErr "destroy" $ c_rocksdb_destroy_db opts_ptr path_ptr
 
@@ -261,7 +264,7 @@ destroy path opts = liftIO $ bracket (mkOpts opts) freeOpts destroy'
 repair :: MonadIO m => FilePath -> Options -> m ()
 repair path opts = liftIO $ bracket (mkOpts opts) freeOpts repair'
     where
-        repair' (Options' opts_ptr _ _) =
+        repair' (Options' opts_ptr _ _ _) =
             withFilePath path $ \path_ptr ->
                 throwIfErr "repair" $ c_rocksdb_repair_db opts_ptr path_ptr
 

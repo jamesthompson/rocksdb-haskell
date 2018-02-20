@@ -11,6 +11,7 @@
 module Database.RocksDB.Types
     ( BatchOp (..)
     , BloomFilter (..)
+    , SliceTransform(..)
     , Comparator (..)
     , Compression (..)
     , ColumnFamilyDescriptor (..)
@@ -60,6 +61,17 @@ data FilterPolicy = FilterPolicy
 
 -- | Represents the built-in Bloom Filter
 newtype BloomFilter = BloomFilter FilterPolicyPtr
+
+-- | User-defined Slice Transform function
+data SliceTransform
+  = SliceTransformFun
+    { stName      :: String
+    , stInDomain  :: ByteString -> Bool
+    , stInRange   :: ByteString -> Bool
+    , stTransform :: ByteString -> ByteString
+    }
+  | FixedPrefixSliceTransform Int
+  | NoOpSliceTransform
 
 -- | Options when opening a database
 data Options = Options
@@ -115,6 +127,21 @@ data Options = Options
       -- database is opened.
       --
       -- Default: 4MB
+    , prefixExtractor :: !(Maybe SliceTransform)
+      -- ^ If non-'Nothing', use the specified function to determine the
+      -- prefixes for keys.  These prefixes will be placed in the filter.
+      -- Depending on the workload, this can reduce the number of read-IOP
+      -- cost for scans when a prefix is passed via ReadOptions to
+      -- 'newIterator'. For prefix filtering to work properly,
+      -- "prefix_extractor" and "comparator" must be such that the following
+      -- properties hold:
+      --
+      -- 1) key.starts_with(prefix(key))
+      -- 2) Compare(prefix(key), key) <= 0.
+      -- 3) If Compare(k1, k2) <= 0, then Compare(prefix(k1), prefix(k2)) <= 0
+      -- 4) prefix(prefix(key)) == prefix(key)
+      --
+      -- Default: Nothing
     }
 
 defaultOptions :: Options
@@ -126,6 +153,7 @@ defaultOptions = Options
     , maxOpenFiles         = 1000
     , paranoidChecks       = False
     , writeBufferSize      = 4 `shift` 20
+    , prefixExtractor      = Nothing
     }
 
 instance Default Options where
@@ -174,13 +202,17 @@ data ReadOptions = ReadOptions
       -- this read operation.
       --
       -- Default: Nothing
+    , prefixSameAsStart :: !Bool
+      -- ^ If 'True', iterators will only iterate over the same prefix as their
+      -- start key. Only valid if a 'prefixExtractor' is set
     } deriving (Eq)
 
 defaultReadOptions :: ReadOptions
 defaultReadOptions = ReadOptions
-    { verifyCheckSums = False
-    , fillCache       = True
-    , useSnapshot     = Nothing
+    { verifyCheckSums   = False
+    , fillCache         = True
+    , useSnapshot       = Nothing
+    , prefixSameAsStart = False
     }
 
 instance Default ReadOptions where
