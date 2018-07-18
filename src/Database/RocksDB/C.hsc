@@ -21,6 +21,7 @@ import Foreign.C.String
 #endif
 
 data RocksDB
+data ColumnFamily
 data LCache
 data LComparator
 data LIterator
@@ -33,6 +34,7 @@ data LWriteOptions
 data LFilterPolicy
 
 type RocksDBPtr      = Ptr RocksDB
+type ColumnFamilyPtr = Ptr ColumnFamily
 type CachePtr        = Ptr LCache
 type ComparatorPtr   = Ptr LComparator
 type IteratorPtr     = Ptr LIterator
@@ -48,6 +50,8 @@ type DBName = CString
 type ErrPtr = Ptr CString
 type Key    = CString
 type Val    = CString
+
+type CArray a = Ptr a
 
 newtype CompressionOpt = CompressionOpt { compressionOpt :: CInt }
   deriving (Eq, Show)
@@ -67,6 +71,23 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_open"
 foreign import ccall safe "rocksdb\\c.h rocksdb_close"
   c_rocksdb_close :: RocksDBPtr -> IO ()
 
+foreign import ccall safe "rocksdb\\c.h rocksdb_open_column_families"
+  c_rocksdb_open_column_families :: OptionsPtr
+                                 -> DBName
+                                 -> CInt
+                                 -> CArray CString
+                                 -> CArray OptionsPtr
+                                 -> CArray ColumnFamilyPtr
+                                 -> ErrPtr
+                                 -> IO RocksDBPtr
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_create_column_family"
+  c_rocksdb_create_column_family :: RocksDBPtr
+                                 -> OptionsPtr
+                                 -> CString
+                                 -> ErrPtr
+                                 -> IO ColumnFamilyPtr
+
 
 foreign import ccall safe "rocksdb\\c.h rocksdb_put"
   c_rocksdb_put :: RocksDBPtr
@@ -76,12 +97,29 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_put"
                 -> ErrPtr
                 -> IO ()
 
+foreign import ccall safe "rocksdb\\c.h rocksdb_put_cf"
+  c_rocksdb_put_cf :: RocksDBPtr
+                   -> WriteOptionsPtr
+                   -> ColumnFamilyPtr
+                   -> Key -> CSize
+                   -> Val -> CSize
+                   -> ErrPtr
+                   -> IO ()
+
 foreign import ccall safe "rocksdb\\c.h rocksdb_delete"
   c_rocksdb_delete :: RocksDBPtr
                    -> WriteOptionsPtr
                    -> Key -> CSize
                    -> ErrPtr
                    -> IO ()
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_delete_cf"
+  c_rocksdb_delete_cf :: RocksDBPtr
+                      -> WriteOptionsPtr
+                      -> ColumnFamilyPtr
+                      -> Key -> CSize
+                      -> ErrPtr
+                      -> IO ()
 
 foreign import ccall safe "rocksdb\\c.h rocksdb_write"
   c_rocksdb_write :: RocksDBPtr
@@ -99,6 +137,15 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_get"
                 -> Ptr CSize        -- ^ value length
                 -> ErrPtr
                 -> IO CString
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_get_cf"
+  c_rocksdb_get_cf :: RocksDBPtr
+                   -> ReadOptionsPtr
+                   -> ColumnFamilyPtr
+                   -> Key -> CSize
+                   -> Ptr CSize       -- ^ value length
+                   -> ErrPtr
+                   -> IO CString
 
 foreign import ccall safe "rocksdb\\c.h rocksdb_create_snapshot"
   c_rocksdb_create_snapshot :: RocksDBPtr -> IO SnapshotPtr
@@ -122,6 +169,9 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_approximate_sizes"
 foreign import ccall safe "rocksdb\\c.h rocksdb_destroy_db"
   c_rocksdb_destroy_db :: OptionsPtr -> DBName -> ErrPtr -> IO ()
 
+foreign import ccall safe "rocksdb\\c.h rocksdb_column_family_handle_destroy"
+  c_rocksdb_column_family_handle_destroy :: ColumnFamilyPtr -> IO ()
+
 foreign import ccall safe "rocksdb\\c.h rocksdb_repair_db"
   c_rocksdb_repair_db :: OptionsPtr -> DBName -> ErrPtr -> IO ()
 
@@ -132,6 +182,9 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_repair_db"
 
 foreign import ccall safe "rocksdb\\c.h rocksdb_create_iterator"
   c_rocksdb_create_iterator :: RocksDBPtr -> ReadOptionsPtr -> IO IteratorPtr
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_create_iterator_cf"
+  c_rocksdb_create_iterator_cf :: RocksDBPtr -> ReadOptionsPtr -> ColumnFamilyPtr -> IO IteratorPtr
 
 foreign import ccall safe "rocksdb\\c.h rocksdb_iter_destroy"
   c_rocksdb_iter_destroy :: IteratorPtr -> IO ()
@@ -183,8 +236,18 @@ foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_put"
                            -> Val -> CSize
                            -> IO ()
 
+foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_put_cf"
+  c_rocksdb_writebatch_put_cf :: WriteBatchPtr
+                              -> ColumnFamilyPtr
+                              -> Key -> CSize
+                              -> Val -> CSize
+                              -> IO ()
+
 foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_delete"
   c_rocksdb_writebatch_delete :: WriteBatchPtr -> Key -> CSize -> IO ()
+
+foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_delete_cf"
+  c_rocksdb_writebatch_delete_cf :: WriteBatchPtr -> ColumnFamilyPtr -> Key -> CSize -> IO ()
 
 foreign import ccall safe "rocksdb\\c.h rocksdb_writebatch_iterate"
   c_rocksdb_writebatch_iterate :: WriteBatchPtr
